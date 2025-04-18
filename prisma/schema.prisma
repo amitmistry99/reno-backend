@@ -1,0 +1,139 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum UserStatus {
+  PENDING
+  VERIFIED
+}
+
+enum OrderStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  CANCELLED
+}
+
+model User {
+  id               String   @id @default(uuid())
+  phone            String   @unique
+  userName         String?
+  otp              String?
+  otpExpiry        DateTime?
+  otpRequestedAt   DateTime?
+  otpAttempts      Int      @default(0)
+  refreshToken     String?
+  role             Role   @default(USER)
+  status           UserStatus   @default(PENDING) //VERIFIED & PENDING
+  orders           Order[]
+  cart             Cart?
+  products         Product[]
+  reviews          Review[]
+  createdAt        DateTime @default(now())
+}
+
+model Address {
+  id  String @id @default(uuid())
+  order Order?
+}
+
+model Product {
+  id          String      @id @default(uuid())
+  name        String
+  description String
+  price       Float
+  isNew       Boolean?
+  isOnSale    Boolean?
+  category    String   
+  colors      Json?
+  materials   Json?     
+  stock       Int       @default(0)
+  user        User      @relation(fields: [userId], references: [id])
+  userId      String
+  images      Json?     
+  reviews     Review[]
+  cartItem    CartItem?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  orderItem   OrderItem? 
+
+  @@map("products")
+}
+
+model Review {
+  id        String   @id @default(uuid())
+  rating    Int
+  review    String
+  isFlagged  Boolean  @default(false)
+  product   Product  @relation(fields: [productId], references: [id])
+  productId String
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  verifiedPurchase Boolean
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("reviews")
+  @@unique([userId, productId])
+}
+
+model Order {
+  id        String       @id @default(uuid())
+  userId    String
+  user      User         @relation(fields: [userId], references: [id])
+  items     OrderItem[]
+  totalAmount Float
+  status    OrderStatus  @default(PENDING)
+  address   Address?   @relation(fields: [addressId], references: [id])
+  addressId String @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model OrderItem {
+  id        String   @id @default(uuid())
+  orderId   String
+  productId String  @unique
+  quantity  Int
+  totalPrice Int
+  order     Order    @relation(fields: [orderId], references: [id])
+  product   Product  @relation(fields: [productId], references: [id])
+
+  @@unique([orderId, productId])
+}
+
+model Cart {
+  id         String       @id @default(uuid())
+  userId     String       @unique
+  user       User      @relation(fields: [userId], references: [id])
+  items      CartItem[]
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+}
+
+model CartItem {
+  id        String     @id @default(uuid())
+  cart      Cart    @relation(fields: [cartId], references: [id])
+  cartId    String
+  product   Product @relation(fields: [productId], references: [id])
+  productId String  @unique
+  quantity  Int     @default(1)
+  selected  Boolean @default(true) // For partial checkout
+  createdAt DateTime @default(now())
+
+  @@unique([cartId, productId])
+}
