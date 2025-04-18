@@ -81,3 +81,155 @@ export const deleteProduct = async (req, res, next) => {
       next(err)
     }
 }
+
+// Process return/refund
+export const processRefund = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { amount, reason, items } = req.body
+    const adminId = req.user.id; // Assuming admin user is authenticated
+
+    // Validate refund
+    const order = await prisma.order.findUnique({
+      where: { id },
+      include: { items: true }
+    });
+
+    if (!order) {
+      return res.status(404).json({ error: 'Order not found' })
+    }
+
+    if (order.status !== 'RETURNED' && order.status !== 'CANCELLED') {
+      return res.status(400).json({ error: 'Order must be returned or cancelled before refund' })
+    }
+
+    // Process refund in transaction
+    const refund = await prisma.$transaction(async (tx) => {
+      // Create refund record
+      const refund = await tx.refund.create({
+        data: {
+          orderId: id,
+          amount: parseFloat(amount),
+          reason,
+          status: 'PROCESSED',
+          processedBy: adminId,
+          processedAt: new Date()
+        }
+      })
+
+      // Update order payment status
+      let paymentStatus = 'PARTIALLY_REFUNDED';
+      if (refund.amount === order.total) {
+        paymentStatus = 'REFUNDED'
+      }
+
+      await tx.order.update({
+        where: { id },
+        data: { paymentStatus }
+      })
+
+      // Restock items if needed
+      if (items && items.length > 0) {
+        await Promise.all(
+          items.map(async (item) => {
+            await tx.inventory.update({
+              where: { productId: item.productId },
+              data: { stock: { increment: item.quantity } }
+            })
+          })
+        )
+      }
+
+      return refund
+    })
+
+    // Send refund confirmation to customer
+    await sendRefundConfirmationEmail(order.userId, order.orderNumber, refund.amount);
+
+    res.json(refund)
+  } catch (error) {
+    console.error('Error processing refund:', error);
+    res.status(500).json({ error: 'Failed to process refund' })
+  }
+}
+
+
+// Generate shipping label
+export const generateLabel = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const order = await prisma.order.findUnique({
+      where: { id },
+      include: {
+        user: true,
+        items: {
+          include: {
+            product: true
+          }
+        }
+      }
+    })
+
+    if (!order) {
+      return res.status(404).json({ error: 'Order not found' })
+    }
+
+    // Generate shipping label (integrate with shipping provider API)
+    const label = await generateShippingLabel(order);
+
+    res.json({
+      labelUrl: label.url,
+      trackingNumber: label.trackingNumber,
+      carrier: label.carrier,
+      estimatedDelivery: label.estimatedDelivery
+    });
+  } catch (error) {
+    console.error('Error generating shipping label:', error);
+    res.status(500).json({ error: 'Failed to generate shipping label' })
+  }
+}
+
+// Fulfillment tracking webhook
+export const fulfillmentWebhook = async (req, res) => {
+  try {
+    const { orderId, status, trackingNumber, carrier, timestamp } = req.body
+
+    // Verify webhook signature if needed
+    // ...
+
+    // Update order status
+    const updatedOrder = await prisma.order.update({
+      where: { orderNumber: orderId },
+      data: {
+        status,
+        trackingNumber,
+        shippingCarrier: carrier
+      }
+    })
+
+    // Record in history
+    await prisma.orderHistory.create({
+      data: {
+        orderId: updatedOrder.id,
+        status,
+        notes: `Updated via ${carrier} webhook`
+      }
+    })
+
+    // Notify customer if shipped/delivered
+    if (status === 'SHIPPED' || status === 'DELIVERED') {
+      await sendOrderStatusEmail(
+        updatedOrder.userId,
+        updatedOrder.orderNumber,
+        status,
+        trackingNumber
+      )
+    }
+
+    res.status(200).send('Webhook processed')
+  } catch (error) {
+    console.error('Error processing fulfillment webhook:', error)
+    res.status(500).send('Failed to process webhook')
+  }
+}
